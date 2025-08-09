@@ -2,6 +2,7 @@ import json
 import logging
 import asyncio
 import os
+import random
 from datetime import datetime, timedelta
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -11,7 +12,7 @@ import threading
 import requests
 import time
 
-# --- Robust logging ---
+# --- Enhanced logging for production ---
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
     level=logging.WARNING,
@@ -19,7 +20,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Suppress network error logs
+# Suppress verbose network logs
 logging.getLogger('httpx').setLevel(logging.ERROR)
 logging.getLogger('httpcore').setLevel(logging.ERROR)
 logging.getLogger('telegram').setLevel(logging.ERROR)
@@ -36,17 +37,17 @@ class SimpleTelegramQuizBot:
         self.last_activity = {}
         self.cleanup_counter = 0
         self.max_retries = 3
-        self.retry_delay = 2.0
+        self.retry_delay = 1.5  # Reduced from 2.0
         self.application = None
 
     def cleanup_old_data(self):
-        """Clean up old user data aggressively"""
+        """Aggressive cleanup for better memory management"""
         self.cleanup_counter += 1
-        if self.cleanup_counter % 15 != 0:
+        if self.cleanup_counter % 10 != 0:  # Reduced from 15
             return
 
         current_time = datetime.now()
-        cutoff_time = current_time - timedelta(hours=1)
+        cutoff_time = current_time - timedelta(minutes=30)  # Reduced from 1 hour
 
         users_to_remove = [
             user_id for user_id, last_seen in self.last_activity.items()
@@ -58,13 +59,16 @@ class SimpleTelegramQuizBot:
             self.user_states.pop(user_id, None)
             self.last_activity.pop(user_id, None)
 
+        if users_to_remove:
+            logger.warning(f"🧹 Cleaned {len(users_to_remove)} inactive users")
+
     def update_user_activity(self, user_id):
         """Update last activity timestamp"""
         self.last_activity[user_id] = datetime.now()
         self.cleanup_old_data()
 
     async def safe_send_message(self, chat_id, text, **kwargs):
-        """Send message with retry logic"""
+        """Optimized message sending with reduced timeouts"""
         for attempt in range(self.max_retries):
             try:
                 bot = self.application.bot
@@ -76,7 +80,7 @@ class SimpleTelegramQuizBot:
                 else:
                     return None
             except RetryAfter as e:
-                await asyncio.sleep(e.retry_after + 1)
+                await asyncio.sleep(min(e.retry_after + 1, 5))  # Cap retry delay
                 continue
             except BadRequest:
                 return None
@@ -85,7 +89,7 @@ class SimpleTelegramQuizBot:
         return None
 
     async def safe_edit_message(self, message, text, **kwargs):
-        """Edit message with retry logic"""
+        """Optimized message editing"""
         for attempt in range(self.max_retries):
             try:
                 return await message.edit_text(text, **kwargs)
@@ -96,7 +100,7 @@ class SimpleTelegramQuizBot:
                 else:
                     return None
             except RetryAfter as e:
-                await asyncio.sleep(e.retry_after + 1)
+                await asyncio.sleep(min(e.retry_after + 1, 5))
                 continue
             except BadRequest:
                 return None
@@ -105,7 +109,7 @@ class SimpleTelegramQuizBot:
         return None
 
     async def safe_send_poll(self, **poll_params):
-        """Send poll with retry logic"""
+        """Optimized poll sending"""
         for attempt in range(self.max_retries):
             try:
                 bot = self.application.bot
@@ -117,7 +121,7 @@ class SimpleTelegramQuizBot:
                 else:
                     return None
             except RetryAfter as e:
-                await asyncio.sleep(e.retry_after + 1)
+                await asyncio.sleep(min(e.retry_after + 1, 5))
                 continue
             except BadRequest:
                 return None
@@ -126,7 +130,7 @@ class SimpleTelegramQuizBot:
         return None
 
     async def send_quiz_questions(self, questions: list, chat_id: str, is_anonymous: bool = True):
-        """Send quiz questions"""
+        """Send quiz questions with optimized batch processing"""
         success_count = 0
 
         for i, question_data in enumerate(questions, 1):
@@ -158,7 +162,8 @@ class SimpleTelegramQuizBot:
                 if result:
                     success_count += 1
 
-                await asyncio.sleep(0.05)
+                # Reduced delay for faster quiz delivery
+                await asyncio.sleep(0.03)
 
             except Exception:
                 pass
@@ -239,20 +244,12 @@ class SimpleTelegramQuizBot:
 
         selection_msg = await self.get_quiz_type_selection_message()
 
-        if hasattr(update, 'message') and update.message:
-            await self.safe_send_message(
-                update.effective_chat.id,
-                selection_msg,
-                reply_markup=reply_markup,
-                parse_mode='Markdown'
-            )
-        else:
-            await self.safe_send_message(
-                update.effective_chat.id,
-                selection_msg,
-                reply_markup=reply_markup,
-                parse_mode='Markdown'
-            )
+        await self.safe_send_message(
+            update.effective_chat.id,
+            selection_msg,
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
 
     async def handle_quiz_type_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle quiz type selection"""
@@ -279,10 +276,10 @@ class SimpleTelegramQuizBot:
         )
 
         if result:
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)  # Reduced delay
             _, msg2 = await self.get_welcome_messages()
             await self.safe_send_message(query.message.chat_id, f"{msg2}")
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)
             json_request = await self.get_json_request_message(is_anonymous)
             await self.safe_send_message(query.message.chat_id, json_request, parse_mode='Markdown')
 
@@ -397,20 +394,20 @@ class SimpleTelegramQuizBot:
         self.update_user_activity(user_id)
         self.user_states[user_id] = "choosing_type"
 
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.05)  # Reduced delay
         restart_msg = f"""🎉 **Ready for another quiz?** ✨"""
         result1 = await self.safe_send_message(update.effective_chat.id, restart_msg, parse_mode='Markdown')
 
         if result1:
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)
             msg1, _ = await self.get_welcome_messages()
             result2 = await self.safe_send_message(update.effective_chat.id, msg1, parse_mode='Markdown')
             if result2:
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.05)
                 await self.show_quiz_type_selection(update)
 
     async def handle_json_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle JSON messages"""
+        """Handle JSON messages with faster processing"""
         user_message = update.message.text.strip()
         user_chat_id = update.effective_chat.id
         user_id = update.effective_user.id
@@ -440,11 +437,11 @@ class SimpleTelegramQuizBot:
                     "❌ **No questions found!** 🔍\n\n🔄 **Let's restart with proper format...** 📋",
                     parse_mode='Markdown'
                 )
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.3)
                 await self.restart_cycle(update)
                 return
 
-            # Validation logic (same as original)
+            # Fast validation logic
             for i, question in enumerate(questions):
                 question_text = question.get("q") or question.get("question", "")
                 options = question.get("o") or question.get("options", [])
@@ -454,14 +451,14 @@ class SimpleTelegramQuizBot:
                     if correct_id is None:
                         correct_id = question.get("correct_option_id", -1)
 
-                # Validation checks
+                # Quick validation checks
                 if not question_text or not options or correct_id is None or correct_id == -1:
                     await self.safe_edit_message(
                         processing_msg,
                         f"❌ **Question {i + 1}: Invalid format** 📝\n\n🔄 **Restarting...** 🔄",
                         parse_mode='Markdown'
                     )
-                    await asyncio.sleep(0.3)
+                    await asyncio.sleep(0.2)
                     await self.restart_cycle(update)
                     return
 
@@ -471,7 +468,7 @@ class SimpleTelegramQuizBot:
                         f"❌ **Question {i + 1}: Invalid options** 📝\n\n🔄 **Restarting...** 🔄",
                         parse_mode='Markdown'
                     )
-                    await asyncio.sleep(0.3)
+                    await asyncio.sleep(0.2)
                     await self.restart_cycle(update)
                     return
 
@@ -481,7 +478,7 @@ class SimpleTelegramQuizBot:
                         f"❌ **Question {i + 1}: Invalid 'c' value** 🔢\n\n🔄 **Restarting...** 🔄",
                         parse_mode='Markdown'
                     )
-                    await asyncio.sleep(0.3)
+                    await asyncio.sleep(0.2)
                     await self.restart_cycle(update)
                     return
 
@@ -506,7 +503,7 @@ class SimpleTelegramQuizBot:
                     f"⚠️ **Partial Success:** {success_count}/{len(questions)} questions sent 📊\n\n🔄 **Restarting...** 🔄",
                     parse_mode='Markdown'
                 )
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.2)
                 await self.restart_cycle(update)
 
         except json.JSONDecodeError:
@@ -515,7 +512,7 @@ class SimpleTelegramQuizBot:
                 "❌ **Invalid JSON Format!** 📋\n\n🔄 **Let's restart with proper format...** ✨",
                 parse_mode='Markdown'
             )
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.2)
             await self.restart_cycle(update)
         except Exception:
             await self.safe_edit_message(
@@ -523,21 +520,21 @@ class SimpleTelegramQuizBot:
                 "❌ **Error occurred!** ⚠️\n\n🔄 **Restarting...** 🔄",
                 parse_mode='Markdown'
             )
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.2)
             await self.restart_cycle(update)
 
-    async def setup_application(self):
-        """Setup Telegram application with proper error handling"""
+    async def setup_application_fast(self):
+        """Optimized setup for faster cold starts"""
         try:
             self.application = (Application.builder()
-                               .token(self.telegram_token)
-                               .pool_timeout(60)
-                               .connection_pool_size(4)
-                               .get_updates_pool_timeout(60)
-                               .read_timeout(30)
-                               .write_timeout(30)
-                               .connect_timeout(30)
-                               .build())
+                                .token(self.telegram_token)
+                                .pool_timeout(20)          # Reduced from 60
+                                .connection_pool_size(2)    # Reduced from 4
+                                .get_updates_pool_timeout(30)  # Reduced from 60
+                                .read_timeout(15)          # Reduced from 30
+                                .write_timeout(15)         # Reduced from 30
+                                .connect_timeout(10)       # Reduced from 30
+                                .build())
 
             def error_handler(update, context):
                 error = context.error
@@ -547,20 +544,26 @@ class SimpleTelegramQuizBot:
 
             self.application.add_error_handler(error_handler)
 
-            # Add all handlers
-            self.application.add_handler(CommandHandler("start", self.start_command))
-            self.application.add_handler(CommandHandler("help", self.help_command))
-            self.application.add_handler(CommandHandler("template", self.template_command))
-            self.application.add_handler(CommandHandler("quickstart", self.quick_start_command))
-            self.application.add_handler(CommandHandler("status", self.status_command))
-            self.application.add_handler(CommandHandler("toggle", self.toggle_command))
-            self.application.add_handler(CallbackQueryHandler(self.handle_quiz_type_selection))
-            self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_json_message))
+            # Add handlers efficiently
+            handlers = [
+                CommandHandler("start", self.start_command),
+                CommandHandler("help", self.help_command),
+                CommandHandler("template", self.template_command),
+                CommandHandler("quickstart", self.quick_start_command),
+                CommandHandler("status", self.status_command),
+                CommandHandler("toggle", self.toggle_command),
+                CallbackQueryHandler(self.handle_quiz_type_selection),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_json_message)
+            ]
+
+            for handler in handlers:
+                self.application.add_handler(handler)
 
             # Initialize the application
             await self.application.initialize()
+            await self.application.start()
 
-            # Set webhook
+            # Set webhook with timeout
             render_url = os.environ.get('RENDER_EXTERNAL_URL', 'https://telegram-quiz-bot-render.onrender.com')
             webhook_url = f"{render_url}/webhook"
 
@@ -569,18 +572,18 @@ class SimpleTelegramQuizBot:
                 logger.warning(f"✅ Webhook set to: {webhook_url}")
             except Exception as e:
                 logger.warning(f"Webhook setup error: {e}")
-                
+
         except Exception as e:
             logger.error(f"Application setup failed: {e}")
             raise
 
 
-# Global bot instance - Initialize immediately when module loads
+# Global bot instance
 bot_instance = None
 
 
 def initialize_bot():
-    """Initialize bot with better error handling"""
+    """Fast bot initialization with better error handling"""
     global bot_instance
 
     TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
@@ -590,42 +593,46 @@ def initialize_bot():
 
     bot_instance = SimpleTelegramQuizBot(TELEGRAM_TOKEN)
 
-    # Run async setup in event loop with proper error handling
+    # Optimized async setup
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(bot_instance.setup_application())
+        loop.run_until_complete(bot_instance.setup_application_fast())
         loop.close()
-        logger.warning("🚀 Bot initialized successfully!")
+        logger.warning("🚀 Fast bot init complete!")
         return bot_instance
     except Exception as e:
         logger.error(f"Bot initialization failed: {e}")
         return None
 
 
-# Initialize bot when module loads (works with both Gunicorn and direct run)
+# Initialize bot when module loads
 bot_instance = initialize_bot()
 
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Handle Telegram webhook"""
+    """Enhanced webhook with better error handling"""
     global bot_instance
-    if bot_instance and bot_instance.application:
-        try:
-            update_data = request.get_json()
-            if update_data:
-                update = Update.de_json(update_data, bot_instance.application.bot)
-                # Run async function in event loop
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(bot_instance.application.process_update(update))
-                loop.close()
-            return "OK", 200
-        except Exception as e:
-            logger.warning(f"Webhook error: {type(e).__name__}")
-            return "Error", 500
-    return "Bot not ready", 503
+    
+    if not bot_instance or not bot_instance.application:
+        logger.warning("Bot not ready for webhook requests")
+        return "Bot initializing", 503
+        
+    try:
+        update_data = request.get_json()
+        if not update_data:
+            return "No data", 400
+            
+        update = Update.de_json(update_data, bot_instance.application.bot)
+        
+        # Use asyncio.run for webhook processing
+        asyncio.run(bot_instance.application.process_update(update))
+        return "OK", 200
+        
+    except Exception as e:
+        logger.warning(f"Webhook error: {type(e).__name__}")
+        return "Processing failed", 500
 
 
 @app.route('/health', methods=['GET', 'HEAD'])
@@ -633,28 +640,24 @@ def health():
     """Enhanced health check for UptimeRobot"""
     global bot_instance
 
-    # Quick health check
     bot_status = "ready" if (bot_instance and bot_instance.application) else "initializing"
-    uptime = time.time()  # Simple uptime indicator
-
+    
     response_data = {
         "status": "healthy",
         "bot": bot_status,
-        "uptime": int(uptime),
+        "uptime": int(time.time()),
         "timestamp": datetime.now().isoformat()
     }
 
-    # For UptimeRobot HEAD requests (faster)
     if request.method == 'HEAD':
         return "", 200
 
-    # For GET requests (debugging)
     return response_data, 200
 
 
 @app.route('/wake', methods=['GET'])
 def wake():
-    """Special endpoint for faster wake-up"""
+    """Fast wake-up endpoint"""
     global bot_instance
 
     if bot_instance and bot_instance.application:
@@ -663,60 +666,77 @@ def wake():
         return {"status": "waking", "bot": "initializing"}, 202
 
 
+@app.route('/ping', methods=['GET', 'HEAD'])
+def ping():
+    """Additional ping endpoint for multiple monitors"""
+    return "", 200
+
+
+@app.route('/heartbeat', methods=['GET'])  
+def heartbeat():
+    """Heartbeat endpoint"""
+    return {"status": "alive", "timestamp": time.time()}, 200
+
+
 @app.route('/', methods=['GET'])
 def home():
     """Home page"""
     global bot_instance
     status = "✅ Ready" if bot_instance and bot_instance.application else "❌ Not Ready"
+    active_users = len(bot_instance.user_preferences) if bot_instance else 0
+    
     return f"""
-    <h1>🎯 Quiz Bot is Running!</h1>
+    <h1>🎯 Quiz Bot v2.0 - Optimized!</h1>
     <p>Status: {status}</p>
     <p>🔗 Webhook: Ready</p>
     <p>🤖 Telegram Bot: Connected</p>
+    <p>👥 Active Users: {active_users}</p>
+    <p>⚡ Performance: Enhanced</p>
     <hr>
     <p>Made with ❤️ for creating awesome quizzes!</p>
     """
 
 
-def keep_alive():
-    """Optimized keep-alive for UptimeRobot + Render"""
+def enhanced_keep_alive():
+    """Multi-endpoint keep-alive for better performance"""
     def ping():
+        endpoints = ['/health', '/wake', '/ping', '/heartbeat']
         while True:
             try:
-                # Ping every 12 minutes (shorter than 15min timeout)
-                # This works WITH UptimeRobot (every 5min) for redundancy
-                time.sleep(12 * 60)
-
+                # Aggressive keep-alive: every 5 minutes with rotation
+                time.sleep(5 * 60)
+                
                 port = os.environ.get('PORT', '10000')
+                endpoint = random.choice(endpoints)
+                
                 response = requests.get(
-                    f'http://localhost:{port}/health',
-                    timeout=5,
-                    headers={'User-Agent': 'KeepAlive-Bot/1.0'}
+                    f'http://localhost:{port}{endpoint}',
+                    timeout=3,
+                    headers={'User-Agent': 'FastKeepAlive-Bot/2.0'}
                 )
-
+                
                 if response.status_code == 200:
-                    logger.warning("🔄 Self-ping successful")
+                    logger.warning(f"🔄 Fast-ping {endpoint} successful")
                 else:
-                    logger.warning(f"⚠️ Self-ping failed: {response.status_code}")
+                    logger.warning(f"⚠️ Fast-ping {endpoint} failed: {response.status_code}")
 
             except Exception as e:
-                logger.warning(f"❌ Self-ping error: {type(e).__name__}")
-                # Continue running even if ping fails
+                logger.warning(f"❌ Fast-ping error: {type(e).__name__}")
                 pass
 
     thread = threading.Thread(target=ping, daemon=True)
     thread.start()
-    logger.warning("🛡️ Keep-alive protection started")
+    logger.warning("🛡️ Enhanced keep-alive protection started")
 
 
-# Start keep-alive when module loads
-keep_alive()
+# Start enhanced keep-alive
+enhanced_keep_alive()
 
 
 def main():
     """Main function for direct execution"""
     port = int(os.environ.get('PORT', 10000))
-    logger.warning("🚀 Starting Flask server...")
+    logger.warning("🚀 Starting optimized Flask server...")
     app.run(host='0.0.0.0', port=port, debug=False)
 
 
