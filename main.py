@@ -625,27 +625,26 @@ def main():
     global bot_instance
     bot_instance = SimpleTelegramQuizBot(TELEGRAM_TOKEN)
     
-    # Setup bot in separate thread
-    def setup_bot():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        bot_instance.setup_application()
-        loop.run_until_complete(bot_instance.application.initialize())
-        
-        # Set webhook
-        webhook_url = os.environ.get('RENDER_EXTERNAL_URL', '') + '/webhook'
-        if webhook_url.startswith('http'):
-            loop.run_until_complete(bot_instance.application.bot.set_webhook(url=webhook_url))
-            logger.warning(f"Webhook set to: {webhook_url}")
+    # Setup bot synchronously to ensure it's ready
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    bot_instance.setup_application()
+    loop.run_until_complete(bot_instance.application.initialize())
     
-    setup_thread = threading.Thread(target=setup_bot, daemon=True)
-    setup_thread.start()
-    setup_thread.join()
+    # Set webhook with actual Render URL
+    render_url = os.environ.get('RENDER_EXTERNAL_URL', 'https://telegram-quiz-bot-render.onrender.com')
+    webhook_url = f"{render_url}/webhook"
+    
+    try:
+        loop.run_until_complete(bot_instance.application.bot.set_webhook(url=webhook_url))
+        logger.warning(f"✅ Webhook set to: {webhook_url}")
+    except Exception as e:
+        logger.warning(f"Webhook setup error: {e}")
     
     # Start keep-alive pinger
     keep_alive()
     
-    logger.warning("🚀 Quiz Bot starting on Render.com...")
+    logger.warning("🚀 Quiz Bot ready and starting Flask server...")
     
     # Run Flask app
     app.run(host='0.0.0.0', port=port, debug=False)
