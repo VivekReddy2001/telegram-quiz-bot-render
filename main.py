@@ -527,47 +527,52 @@ class SimpleTelegramQuizBot:
             await self.restart_cycle(update)
 
     async def setup_application(self):
-        """Setup Telegram application"""
-        self.application = (Application.builder()
-                            .token(self.telegram_token)
-                            .pool_timeout(60)
-                            .connection_pool_size(4)
-                            .get_updates_pool_timeout(60)
-                            .read_timeout(30)
-                            .write_timeout(30)
-                            .connect_timeout(30)
-                            .build())
-
-        def error_handler(update, context):
-            error = context.error
-            if isinstance(error, (NetworkError, TimedOut)):
-                return
-            logger.warning(f"Bot error: {type(error).__name__}")
-
-        self.application.add_error_handler(error_handler)
-
-        # Add all handlers
-        self.application.add_handler(CommandHandler("start", self.start_command))
-        self.application.add_handler(CommandHandler("help", self.help_command))
-        self.application.add_handler(CommandHandler("template", self.template_command))
-        self.application.add_handler(CommandHandler("quickstart", self.quick_start_command))
-        self.application.add_handler(CommandHandler("status", self.status_command))
-        self.application.add_handler(CommandHandler("toggle", self.toggle_command))
-        self.application.add_handler(CallbackQueryHandler(self.handle_quiz_type_selection))
-        self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_json_message))
-
-        # Initialize the application
-        await self.application.initialize()
-
-        # Set webhook
-        render_url = os.environ.get('RENDER_EXTERNAL_URL', 'https://telegram-quiz-bot-render.onrender.com')
-        webhook_url = f"{render_url}/webhook"
-
+        """Setup Telegram application with proper error handling"""
         try:
-            await self.application.bot.set_webhook(url=webhook_url)
-            logger.warning(f"✅ Webhook set to: {webhook_url}")
+            self.application = (Application.builder()
+                               .token(self.telegram_token)
+                               .pool_timeout(60)
+                               .connection_pool_size(4)
+                               .get_updates_pool_timeout(60)
+                               .read_timeout(30)
+                               .write_timeout(30)
+                               .connect_timeout(30)
+                               .build())
+
+            def error_handler(update, context):
+                error = context.error
+                if isinstance(error, (NetworkError, TimedOut)):
+                    return
+                logger.warning(f"Bot error: {type(error).__name__}")
+
+            self.application.add_error_handler(error_handler)
+
+            # Add all handlers
+            self.application.add_handler(CommandHandler("start", self.start_command))
+            self.application.add_handler(CommandHandler("help", self.help_command))
+            self.application.add_handler(CommandHandler("template", self.template_command))
+            self.application.add_handler(CommandHandler("quickstart", self.quick_start_command))
+            self.application.add_handler(CommandHandler("status", self.status_command))
+            self.application.add_handler(CommandHandler("toggle", self.toggle_command))
+            self.application.add_handler(CallbackQueryHandler(self.handle_quiz_type_selection))
+            self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_json_message))
+
+            # Initialize the application
+            await self.application.initialize()
+
+            # Set webhook
+            render_url = os.environ.get('RENDER_EXTERNAL_URL', 'https://telegram-quiz-bot-render.onrender.com')
+            webhook_url = f"{render_url}/webhook"
+
+            try:
+                await self.application.bot.set_webhook(url=webhook_url)
+                logger.warning(f"✅ Webhook set to: {webhook_url}")
+            except Exception as e:
+                logger.warning(f"Webhook setup error: {e}")
+                
         except Exception as e:
-            logger.warning(f"Webhook setup error: {e}")
+            logger.error(f"Application setup failed: {e}")
+            raise
 
 
 # Global bot instance - Initialize immediately when module loads
@@ -575,7 +580,7 @@ bot_instance = None
 
 
 def initialize_bot():
-    """Initialize bot synchronously"""
+    """Initialize bot with better error handling"""
     global bot_instance
 
     TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
@@ -585,12 +590,12 @@ def initialize_bot():
 
     bot_instance = SimpleTelegramQuizBot(TELEGRAM_TOKEN)
 
-    # Run async setup in event loop
+    # Run async setup in event loop with proper error handling
     try:
-        import asyncio
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(bot_instance.setup_application())
+        loop.close()
         logger.warning("🚀 Bot initialized successfully!")
         return bot_instance
     except Exception as e:
@@ -623,10 +628,39 @@ def webhook():
     return "Bot not ready", 503
 
 
-@app.route('/health', methods=['GET'])
+@app.route('/health', methods=['GET', 'HEAD'])
 def health():
-    """Health check for UptimeRobot"""
-    return "Bot is healthy and running!", 200
+    """Enhanced health check for UptimeRobot"""
+    global bot_instance
+
+    # Quick health check
+    bot_status = "ready" if (bot_instance and bot_instance.application) else "initializing"
+    uptime = time.time()  # Simple uptime indicator
+
+    response_data = {
+        "status": "healthy",
+        "bot": bot_status,
+        "uptime": int(uptime),
+        "timestamp": datetime.now().isoformat()
+    }
+
+    # For UptimeRobot HEAD requests (faster)
+    if request.method == 'HEAD':
+        return "", 200
+
+    # For GET requests (debugging)
+    return response_data, 200
+
+
+@app.route('/wake', methods=['GET'])
+def wake():
+    """Special endpoint for faster wake-up"""
+    global bot_instance
+
+    if bot_instance and bot_instance.application:
+        return {"status": "awake", "bot": "ready"}, 200
+    else:
+        return {"status": "waking", "bot": "initializing"}, 202
 
 
 @app.route('/', methods=['GET'])
@@ -652,57 +686,39 @@ def keep_alive():
                 # Ping every 12 minutes (shorter than 15min timeout)
                 # This works WITH UptimeRobot (every 5min) for redundancy
                 time.sleep(12 * 60)
-                
+
                 port = os.environ.get('PORT', '10000')
                 response = requests.get(
-                    f'http://localhost:{port}/health', 
+                    f'http://localhost:{port}/health',
                     timeout=5,
                     headers={'User-Agent': 'KeepAlive-Bot/1.0'}
                 )
-                
+
                 if response.status_code == 200:
                     logger.warning("🔄 Self-ping successful")
                 else:
                     logger.warning(f"⚠️ Self-ping failed: {response.status_code}")
-                    
+
             except Exception as e:
                 logger.warning(f"❌ Self-ping error: {type(e).__name__}")
                 # Continue running even if ping fails
                 pass
-    
+
     thread = threading.Thread(target=ping, daemon=True)
     thread.start()
     logger.warning("🛡️ Keep-alive protection started")
 
-@app.route('/health', methods=['GET', 'HEAD'])
-def health():
-    """Enhanced health check for UptimeRobot"""
-    global bot_instance
-    
-    # Quick health check
-    bot_status = "ready" if (bot_instance and bot_instance.application) else "initializing"
-    uptime = time.time()  # Simple uptime indicator
-    
-    response_data = {
-        "status": "healthy",
-        "bot": bot_status,
-        "uptime": int(uptime),
-        "timestamp": datetime.now().isoformat()
-    }
-    
-    # For UptimeRobot HEAD requests (faster)
-    if request.method == 'HEAD':
-        return "", 200
-    
-    # For GET requests (debugging)
-    return response_data, 200
 
-@app.route('/wake', methods=['GET'])
-def wake():
-    """Special endpoint for faster wake-up"""
-    global bot_instance
-    
-    if bot_instance and bot_instance.application:
-        return {"status": "awake", "bot": "ready"}, 200
-    else:
-        return {"status": "waking", "bot": "initializing"}, 202
+# Start keep-alive when module loads
+keep_alive()
+
+
+def main():
+    """Main function for direct execution"""
+    port = int(os.environ.get('PORT', 10000))
+    logger.warning("🚀 Starting Flask server...")
+    app.run(host='0.0.0.0', port=port, debug=False)
+
+
+if __name__ == "__main__":
+    main()
