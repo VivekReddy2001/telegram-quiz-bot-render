@@ -27,6 +27,7 @@ logging.getLogger('telegram').setLevel(logging.ERROR)
 # Flask app for webhook
 app = Flask(__name__)
 
+
 class SimpleTelegramQuizBot:
     def __init__(self, telegram_token: str):
         self.telegram_token = telegram_token
@@ -132,7 +133,7 @@ class SimpleTelegramQuizBot:
             try:
                 question_text = (question_data.get("q") or question_data.get("question", ""))
                 options = (question_data.get("o") or question_data.get("options", []))
-                
+
                 correct_id = question_data.get("c")
                 if correct_id is None:
                     correct_id = question_data.get("correct")
@@ -525,17 +526,17 @@ class SimpleTelegramQuizBot:
             await asyncio.sleep(0.3)
             await self.restart_cycle(update)
 
-    def setup_application(self):
-        """Setup Telegram application with webhook"""
+    async def setup_application(self):
+        """Setup Telegram application"""
         self.application = (Application.builder()
-                           .token(self.telegram_token)
-                           .pool_timeout(60)
-                           .connection_pool_size(4)
-                           .get_updates_pool_timeout(60)
-                           .read_timeout(30)
-                           .write_timeout(30)
-                           .connect_timeout(30)
-                           .build())
+                            .token(self.telegram_token)
+                            .pool_timeout(60)
+                            .connection_pool_size(4)
+                            .get_updates_pool_timeout(60)
+                            .read_timeout(30)
+                            .write_timeout(30)
+                            .connect_timeout(30)
+                            .build())
 
         def error_handler(update, context):
             error = context.error
@@ -555,8 +556,51 @@ class SimpleTelegramQuizBot:
         self.application.add_handler(CallbackQueryHandler(self.handle_quiz_type_selection))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_json_message))
 
-# Global bot instance
+        # Initialize the application
+        await self.application.initialize()
+
+        # Set webhook
+        render_url = os.environ.get('RENDER_EXTERNAL_URL', 'https://telegram-quiz-bot-render.onrender.com')
+        webhook_url = f"{render_url}/webhook"
+
+        try:
+            await self.application.bot.set_webhook(url=webhook_url)
+            logger.warning(f"✅ Webhook set to: {webhook_url}")
+        except Exception as e:
+            logger.warning(f"Webhook setup error: {e}")
+
+
+# Global bot instance - Initialize immediately when module loads
 bot_instance = None
+
+
+def initialize_bot():
+    """Initialize bot synchronously"""
+    global bot_instance
+
+    TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
+    if not TELEGRAM_TOKEN:
+        logger.error("TELEGRAM_TOKEN environment variable not set!")
+        return None
+
+    bot_instance = SimpleTelegramQuizBot(TELEGRAM_TOKEN)
+
+    # Run async setup in event loop
+    try:
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(bot_instance.setup_application())
+        logger.warning("🚀 Bot initialized successfully!")
+        return bot_instance
+    except Exception as e:
+        logger.error(f"Bot initialization failed: {e}")
+        return None
+
+
+# Initialize bot when module loads (works with both Gunicorn and direct run)
+bot_instance = initialize_bot()
+
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -578,76 +622,87 @@ def webhook():
             return "Error", 500
     return "Bot not ready", 503
 
+
 @app.route('/health', methods=['GET'])
 def health():
     """Health check for UptimeRobot"""
     return "Bot is healthy and running!", 200
 
+
 @app.route('/', methods=['GET'])
 def home():
     """Home page"""
-    return """
+    global bot_instance
+    status = "✅ Ready" if bot_instance and bot_instance.application else "❌ Not Ready"
+    return f"""
     <h1>🎯 Quiz Bot is Running!</h1>
-    <p>✅ Status: Active</p>
+    <p>Status: {status}</p>
     <p>🔗 Webhook: Ready</p>
     <p>🤖 Telegram Bot: Connected</p>
     <hr>
     <p>Made with ❤️ for creating awesome quizzes!</p>
     """
 
+
 def keep_alive():
-    """Self-ping to prevent sleeping (backup for UptimeRobot)"""
+    """Optimized keep-alive for UptimeRobot + Render"""
     def ping():
         while True:
             try:
-                # Self-ping every 14 minutes
-                time.sleep(14 * 60)
+                # Ping every 12 minutes (shorter than 15min timeout)
+                # This works WITH UptimeRobot (every 5min) for redundancy
+                time.sleep(12 * 60)
+                
                 port = os.environ.get('PORT', '10000')
-                requests.get(f'http://localhost:{port}/health', timeout=10)
-            except:
+                response = requests.get(
+                    f'http://localhost:{port}/health', 
+                    timeout=5,
+                    headers={'User-Agent': 'KeepAlive-Bot/1.0'}
+                )
+                
+                if response.status_code == 200:
+                    logger.warning("🔄 Self-ping successful")
+                else:
+                    logger.warning(f"⚠️ Self-ping failed: {response.status_code}")
+                    
+            except Exception as e:
+                logger.warning(f"❌ Self-ping error: {type(e).__name__}")
+                # Continue running even if ping fails
                 pass
     
     thread = threading.Thread(target=ping, daemon=True)
     thread.start()
+    logger.warning("🛡️ Keep-alive protection started")
 
-def main():
-    """Main function"""
-    # Get token from environment variable
-    TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
-    
-    if not TELEGRAM_TOKEN:
-        logger.error("TELEGRAM_TOKEN environment variable not set!")
-        return
-    
-    # Get port from environment (Render provides this)
-    port = int(os.environ.get('PORT', 10000))
-    
+@app.route('/health', methods=['GET', 'HEAD'])
+def health():
+    """Enhanced health check for UptimeRobot"""
     global bot_instance
-    bot_instance = SimpleTelegramQuizBot(TELEGRAM_TOKEN)
     
-    # Setup bot synchronously to ensure it's ready
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    bot_instance.setup_application()
-    loop.run_until_complete(bot_instance.application.initialize())
+    # Quick health check
+    bot_status = "ready" if (bot_instance and bot_instance.application) else "initializing"
+    uptime = time.time()  # Simple uptime indicator
     
-    # Set webhook with actual Render URL
-    render_url = os.environ.get('RENDER_EXTERNAL_URL', 'https://telegram-quiz-bot-render.onrender.com')
-    webhook_url = f"{render_url}/webhook"
+    response_data = {
+        "status": "healthy",
+        "bot": bot_status,
+        "uptime": int(uptime),
+        "timestamp": datetime.now().isoformat()
+    }
     
-    try:
-        loop.run_until_complete(bot_instance.application.bot.set_webhook(url=webhook_url))
-        logger.warning(f"✅ Webhook set to: {webhook_url}")
-    except Exception as e:
-        logger.warning(f"Webhook setup error: {e}")
+    # For UptimeRobot HEAD requests (faster)
+    if request.method == 'HEAD':
+        return "", 200
     
-    # Start keep-alive pinger
-    keep_alive()
-    
-    logger.warning("🚀 Quiz Bot ready and starting Flask server...")
-    
-    # Run Flask app
-    app.run(host='0.0.0.0', port=port, debug=False)
+    # For GET requests (debugging)
+    return response_data, 200
 
-if __name__ == "__main__":
-    main()
+@app.route('/wake', methods=['GET'])
+def wake():
+    """Special endpoint for faster wake-up"""
+    global bot_instance
+    
+    if bot_instance and bot_instance.application:
+        return {"status": "awake", "bot": "ready"}, 200
+    else:
+        return {"status": "waking", "bot": "initializing"}, 202
