@@ -564,7 +564,7 @@ class SimpleTelegramQuizBot:
             await self.application.start()
 
             # Set webhook with timeout
-            render_url = os.environ.get('RENDER_EXTERNAL_URL', 'https://quiz-bot-tg.onrender.com')
+            render_url = os.environ.get('RENDER_EXTERNAL_URL', 'https://telegram-quiz-bot-render.onrender.com')
             webhook_url = f"{render_url}/webhook"
 
             try:
