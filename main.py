@@ -16,14 +16,13 @@ from contextlib import asynccontextmanager
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.error import NetworkError, TimedOut, RetryAfter, BadRequest, TelegramError
-from flask import Flask, request, jsonify, g
+from flask import Flask, request, jsonify
 import threading
 import requests
 import time
 from functools import wraps
 import weakref
 from collections import defaultdict, deque
-import psutil
 
 # --- Enhanced Configuration Management ---
 @dataclass
@@ -319,13 +318,22 @@ class HealthMonitor:
     def get_system_metrics(self) -> SystemMetrics:
         """Get comprehensive system metrics"""
         try:
-            process = psutil.Process()
-            memory_info = process.memory_info()
+            # Try to import psutil, fallback to basic metrics if not available
+            try:
+                import psutil
+                process = psutil.Process()
+                memory_info = process.memory_info()
+                memory_mb = memory_info.rss / 1024 / 1024
+                cpu_percent = process.cpu_percent()
+            except ImportError:
+                # Fallback to basic metrics without psutil
+                memory_mb = 0  # Unknown without psutil
+                cpu_percent = 0  # Unknown without psutil
             
             return SystemMetrics(
                 uptime_seconds=time.time() - self.start_time,
-                memory_usage_mb=memory_info.rss / 1024 / 1024,
-                cpu_usage_percent=process.cpu_percent(),
+                memory_usage_mb=memory_mb,
+                cpu_usage_percent=cpu_percent,
                 active_users=0,  # Will be updated by bot
                 total_requests=0,  # Will be updated by bot
                 error_count=self.error_count,
