@@ -1463,7 +1463,7 @@ def initialize_bot():
         loop.run_until_complete(bot_instance.setup_application_fast())
         loop.close()
         
-        logger.info("🚀 Enhanced bot initialization complete!")
+        logger.info("🚀 Enhanced bot initialization complete! v3.0.1")
         return bot_instance
         
     except Exception as e:
